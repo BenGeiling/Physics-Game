@@ -1,0 +1,35 @@
+@font-face {
+	font-family: "Gloria";
+	src: url('font/GloriaHallelujah.eot');
+	src: url('font/GloriaHallelujah.eot?#iefix') format('embedded-opentype'),
+	url('font/GloriaHallelujah.woff2') format('woff2'),
+	url('font/GloriaHallelujah.woff') format('woff'),
+	url('font/GloriaHallelujah.ttf') format('truetype'),
+	url('font/GloriaHallelujah.svg#GloriaHallelujah') format('svg');
+	font-weight: normal;
+	font-style: normal;
+}
+
+#wrapper {
+	position: absolute;
+	top: 0px;
+	left: 0px;
+	background-color: black;
+}
+
+#center {
+	position:relative;
+	display:block;
+	margin-left:auto;
+	margin-right:auto;
+}
+
+#background {
+	z-index: 1;
+	position:absolute;
+}
+
+#foreground {
+	z-index: 2;
+	position:absolute;
+}

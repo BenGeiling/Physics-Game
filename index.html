@@ -1,0 +1,961 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+
+<!-- HEADER -->
+<head>
+	<!-- Set-up important tags + scripts -->
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+	<title>CrossFire</title>
+	<meta name="robots" content="index" />
+	<meta name="author" content="Ben Geiling" />
+
+	<link rel="stylesheet" type="text/css" href="main.css" media="screen" />
+
+	<script type="text/javascript" src="script/screenfull.js"></script>
+	<script type="text/javascript" src="script/quadtree.js"></script>
+	<script type="text/javascript" src="script/touch.js"></script>
+	<script type="text/javascript" src="script/items.js"></script>
+	<script type="text/javascript" src="script/players.js"></script>
+	<script type="text/javascript" src="script/blocks.js"></script>
+</head>
+
+<!-- BODY -->
+<body>
+
+<!-- BS hack to preload custom font -->
+<div style="font-family: Gloria">.</div>
+
+<!-- Create and Center HTML5 Canvas -->
+<div id="wrapper">
+	<div id="center">
+		<div id="background"></div>
+		<canvas id="foreground">NO HTML5 SUPPORT</canvas>
+	</div>
+</div>
+
+<!-- Javascript Starts Here -->
+<script>
+
+/***********************************************
+************************************************
+*            Setup Global Variables            *
+************************************************
+************************************************/
+
+//World Variables
+var WRAPPER = document.getElementById("wrapper");
+var CENTER = document.getElementById("center");
+var STAGE_BACKGROUND = document.getElementById("background");
+var STAGE_FOREGROUND = document.getElementById("foreground");
+var stageForeground = STAGE_FOREGROUND.getContext("2d");
+
+var BACKGROUND_COLOR = '#CCFFE6';
+	document.getElementById('background').style.backgroundColor = BACKGROUND_COLOR;
+var BLOCK_SIZE = 18;
+var BORDER_WIDTH = 1;
+var OBJECT_SIZE = BLOCK_SIZE+(BORDER_WIDTH*2); //Don't do this math every time
+var GRAVITY = 0.2; //Base Gravity value for wolrd
+var FRICTION = 1.1; //Friction value, divide by this
+var TERMINAL_VELOCITY = BLOCK_SIZE/2; //Don't let anything clip through a block
+
+//Background and Canvas Size Variables
+var backgroundWidth;
+var backgroundHeight;
+var canvasWidth;
+var canvasHeight;
+
+//Setup Quadtree
+var myTree = new Quadtree({
+    x: 0,
+    y: 0,
+    width: backgroundWidth,
+    height: backgroundHeight
+}, 5, 10);
+
+//Players Array
+var player = new Array();
+
+//Projectiles Array
+var projectile = new Array();
+
+//Blocks Array
+var block = new Array();
+
+//Game Loop Variables
+var now;
+var dt = 0;
+var last = (new Date).getTime();
+var slow = 1;
+var step = 1/60;
+var slowStep = slow * step;
+
+//Listen for touch if possible
+var halfWidth = backgroundWidth/2;
+var halfHeight = backgroundHeight/2;
+var leftTouchID = -1;
+var leftTouchPos = {X: 0, Y: 0};
+var leftTouchStartPos = {X: 0, Y: 0};
+var leftVector = {X: 0, Y: 0};
+var rightTouchID = -1;
+var rightTouchPos = {X: 0, Y: 0};
+var rightTouchStartPos = {X: 0, Y: 0};
+var rightVector = {X: 0, Y: 0};
+
+//Other Variables
+var START_FULLSCREEN = false;
+
+/***********************************************
+************************************************
+*               Functions Go Here              *
+************************************************
+************************************************/
+
+//Ammo Display
+function createHUD(objectType, index, X, Y, color) {
+	objectType.hud[index] = {
+		state: 1,
+		oldX: X,
+		oldY: Y,
+		X: X,
+		Y: Y,
+		color: color,
+		borderColor: 'black',
+		sizeX: BLOCK_SIZE-2,
+		sizeY: BLOCK_SIZE-2,
+		stage: stageForeground,
+		type: 'block',
+		breakable: false
+	};
+}
+
+//Health Display
+function createHealth(object, index, X, Y, color) {
+	object.healthDisplay[index] = {
+		state: 1,
+		oldX: X,
+		oldY: Y,
+		X: X,
+		Y: Y,
+		color: color,
+		borderColor: 'black',
+		sizeX: BLOCK_SIZE-2,
+		sizeY: BLOCK_SIZE-2,
+		stage: stageForeground,
+		type: 'block',
+		breakable: false
+	};
+}
+
+//Change Canvas Size
+function sizeCanvas() {
+	//Get window width and height
+	backgroundWidth = window.innerWidth;
+	backgroundHeight = window.innerHeight;
+
+	//Resize the wrapper
+	WRAPPER.style.width = backgroundWidth + 'px';
+	WRAPPER.style.height = backgroundHeight + 'px';
+
+	//Get Canvas Size
+	canvasWidth = Math.floor(backgroundWidth/(OBJECT_SIZE))*OBJECT_SIZE;
+	canvasHeight = Math.floor(backgroundHeight/(OBJECT_SIZE))*OBJECT_SIZE;
+
+	//Update for touch stuff
+	halfWidth = canvasWidth/2;
+	halfHeight = canvasHeight/2;
+
+ 	//Resize the canvas (and clear it)
+  	CENTER.style.width = canvasWidth + 'px';
+	CENTER.style.height = canvasHeight + 'px';
+  	STAGE_BACKGROUND.style.width = canvasWidth + 'px';
+	STAGE_BACKGROUND.style.height = canvasHeight + 'px';
+  	STAGE_FOREGROUND.width = canvasWidth;
+	STAGE_FOREGROUND.height = canvasHeight;
+
+	//Scroll to the top left
+	window.scrollTo(0,0);
+}
+
+//Collision
+function Collision(object, check) {
+	if (check === 'down') {
+		object.Y++;
+		var bottom = Collision(object, 'all');
+		object.Y--;
+		return bottom[0];
+	} else if (check === 'up') {
+		object.Y--;
+		var top = Collision(object, 'all');
+		object.Y++;
+		return top[0];
+	} else if (check === 'left') {
+		object.X--;
+		var left = Collision(object, 'all');
+		object.X++;
+		return left[0];
+	} else if (check === 'right') {
+		object.X++;
+		var right = Collision(object, 'all');
+		object.X--;
+		return right[0];
+	} else if (check == 'all') {
+
+		var candidates = myTree.retrieve(object);
+
+		if(object.type === 'player') {
+			for(var i = candidates.length - 1; i >= 0; i--) {
+				if(candidates[i] === object) {candidates.splice(i, 1);}
+			}
+		}
+		if(object.type === 'projectile') {
+			for(var i = candidates.length - 1; i >= 0; i--) {
+				//if(candidates[i] === player[0]) {candidates.splice(i, 1);}
+				//if(candidates[i] === player[1]) {candidates.splice(i, 1);}
+			}
+		}
+
+		if (object.type === 'explosion') {
+			for(var i = candidates.length - 1; i >= 0; i--) {
+				var dx = object.X - candidates[i].X;
+				var dy = object.Y - candidates[i].Y;
+				var distance = Math.sqrt(dx * dx + dy * dy);
+				if (distance < (object.R + (candidates[i].sizeX + candidates[i].sizeY)/2)) {
+				} else {candidates.splice(i, 1);}
+			}
+		} else {
+			for(var i = candidates.length - 1; i >= 0; i--) {
+				if (Math.abs(object.X - candidates[i].X) < ((object.sizeX + candidates[i].sizeX + (BORDER_WIDTH*4)) / 2) && Math.abs(object.Y - candidates[i].Y) < ((object.sizeY + candidates[i].sizeY + (BORDER_WIDTH*4)) / 2)) {
+				} else {candidates.splice(i, 1);}
+			}
+		}
+
+		if (candidates.length > 0) {return candidates;} else {return false;}
+	}
+}
+
+//Clear
+function clear(object) {
+	if (object.borderColor != 'none') {
+		object.stage.clearRect(object.oldX-(object.sizeX/2)-BORDER_WIDTH, object.oldY-(object.sizeY/2)-BORDER_WIDTH, object.sizeX+(BORDER_WIDTH*2), object.sizeY+(BORDER_WIDTH*2));
+	} else {
+		object.stage.clearRect(object.oldX-(object.sizeX/2), object.oldY-(object.sizeY/2), object.sizeX, object.sizeY);
+	}
+}
+
+
+//Draw
+function draw(object1) {
+	if (object1.modifier) {
+		var test = object1.color;
+		object1.color = object1.modifier;
+		object1.modifier = test;
+	}
+	object1.stage.beginPath();
+	object1.stage.rect(object1.X-(object1.sizeX/2), object1.Y-(object1.sizeY/2), object1.sizeX, object1.sizeY);
+	object1.stage.closePath();
+	if (object1.color != 'none') {
+		object1.stage.fillStyle = object1.color;
+		object1.stage.fill();
+	}
+	if (object1.borderColor != 'none') {
+		object1.stage.lineWidth = BORDER_WIDTH;
+		object1.stage.strokeStyle = object1.borderColor;
+		object1.stage.stroke();
+	}
+}
+
+//DrawHUD
+function drawHUD(object, objectType, objectAmount, objectTotal, color, overlay) {
+	for(var i = objectType.hud.length - 1; i >= 0; i--) {
+		clear(objectType.hud[i]);
+		objectType.hud.splice(i, 1);
+	}
+
+	if (objectAmount > 0) {
+		for (var i = 0; i < objectAmount; i++) {
+			createHUD(objectType, i, objectType.hudX+(i*(OBJECT_SIZE)*objectType.hudDirection), objectType.hudY, color);
+		}
+		for (var i = objectAmount; i < objectTotal; i++) {
+			createHUD(objectType, i, objectType.hudX+(i*(OBJECT_SIZE)*objectType.hudDirection), objectType.hudY, 'white');
+		}
+		objectType.hud.forEach(function(object, index, item) {draw(object);});
+
+		//Overlay
+		if (overlay) {draw(overlayHUD(object, objectType));}
+		} else if (objectAmount <= 0) {
+			for (var i = 0; i < objectTotal; i++) {
+				createHUD(objectType, i, objectType.hudX+(i*(OBJECT_SIZE)*objectType.hudDirection), objectType.hudY, 'white');
+			}
+		objectType.hud.forEach(function(object, index, item) {draw(object);});
+	}
+}
+
+//Move Crosshair
+function moveCrosshair(amount, object) { //Amount and player
+	object.crosshair.A += amount;
+
+	if (object.facing === 1) {
+		if (object.crosshair.A <= 0) {object.crosshair.A = 0;}
+		if (object.crosshair.A >= 5) {object.crosshair.A = 5;}
+	} else if (object.facing === -1) {
+		if (object.crosshair.A <= 5) {object.crosshair.A = 5;}
+		if (object.crosshair.A >= 10) {object.crosshair.A = 10;}
+	}
+}
+
+//Move Player
+function movePlayer(object, direction) {
+	if (direction === 'left') {
+		//Flip Crosshair
+		if (object.crosshair.A < 5) {object.crosshair.A = 10 - object.crosshair.A;}
+
+		//Move Player
+		if (object.facing === -1) {object.move = "left";} else {object.facing = -1;}
+	} else if (direction === 'right') {
+		//Flip Crosshair
+		if (object.crosshair.A > 5) {object.crosshair.A = 10 - object.crosshair.A;}
+
+		//Move Player
+		if (object.facing === 1) {object.move = "right";} else {object.facing = 1;}
+	}
+}
+
+//Change Item
+function changeItem (object, direction) {
+	if (direction === 'left') {
+		if ((new Date).getTime() - object.timer.item > 200) {
+			if (object.itemIndex < 4) {object.itemIndex++;} else {object.itemIndex = 0;}
+			selectItem(object, object.itemIndex); report(object);
+			object.timer.item = (new Date).getTime();
+		}
+	} else if (direction === 'right') {
+		if ((new Date).getTime() - object.timer.item > 200) {
+			if (object.itemIndex > 0) {object.itemIndex--;} else {object.itemIndex = 4;}
+			selectItem(object, object.itemIndex); report(object);
+			object.timer.item = (new Date).getTime();
+		}
+	}
+}
+
+//Select Item
+function selectItem(object, number) {
+	if (number === 0) {object.item = cannon(object);}
+	else if (number === 1) {object.item = gun(object);}
+	else if (number === 2) {object.item = missile(object);}
+	else if (number === 3) {object.item = explosive(object);}
+	else if (number === 4) {object.item = shovel(object);}
+}
+
+//Get Key Press
+function GetKeyPress() {
+	if (keyPressed[65] || leftVector.X < -25) {movePlayer(player[0], 'left');} //'A' or drag left
+	if (keyPressed[37]) {movePlayer(player[1], 'left');} //Left arrow
+
+	if (keyPressed[68] || leftVector.X > 25) {movePlayer(player[0], 'right');} //'D' or drag right
+	if (keyPressed[39]) {movePlayer(player[1], 'right');} //Right arrow
+
+	if (keyPressed[87] || (leftVector.Y < -25 && leftVector.X < -25) || (leftVector.Y < -25 && leftVector.X > 25)) {jumpPlayer(player[0]);} //'W' or drag up and left or right
+	if (keyPressed[17]) {jumpPlayer(player[1]);} //CTRL Key
+
+	if (keyPressed[16] || rightVector.Y < -25) {fire(player[0]);} //Shift key or drag up
+	if (keyPressed[32]) {fire(player[1]);} //Space key
+
+	if (keyPressed[81] || rightVector.X < -25) {changeItem (player[0], 'left');} //Q or drag right
+	if (keyPressed[219]) {changeItem (player[1], 'left');} //'['
+
+	if (keyPressed[69] || rightVector.X > 25) {changeItem (player[0], 'right');} //E or drag left
+	if (keyPressed[221]) {changeItem (player[1], 'right');} //']'
+
+	if (keyPressed[82] || leftVector.Y < -25) {moveCrosshair(-0.05*player[0].facing, player[0]);} //'R' or Drag up
+	if (keyPressed[38]) {moveCrosshair(-0.05*player[1].facing, player[1]);} //Up Arrow
+
+	if (keyPressed[70] || leftVector.Y > 25) {moveCrosshair(0.05*player[0].facing, player[0]);} //'F' or Drag down
+	if (keyPressed[40]) {moveCrosshair(0.05*player[1].facing, player[1]);} //Down Arrow
+
+}
+
+//Firing
+function fire(object) {
+	if (object.item.ammo > 0 || object.item.ammo === false) {
+		if ((new Date).getTime() - object.timer.fire > object.item.reload) {
+			projectile.push(window[object.item.name](object));
+			object.timer.fire = (new Date).getTime();
+			if (object.item.ammo) {object.item.ammo--;}
+		}
+	}
+}
+
+//Report Info
+function report(object) {
+	object.itemReport = true;
+
+	//Update
+	object.text.oldX = object.text.X;
+	object.text.oldY = object.text.Y;
+	object.timer.text = (new Date).getTime();
+}
+
+//Jumping
+function jumpPlayer(object) {
+	if (Collision(object, 'down')) {object.vY = -OBJECT_SIZE*200;}
+}
+
+//Explode
+function explode(object) {
+	var damage = object.damage;
+	object.state = 2;
+
+	explosion = {
+		type: 'explosion',
+		X: object.X,
+		Y: object.Y,
+		R: object.power,
+		sizeX: 2*object.power,
+		sizeY: 2*object.power,
+		color: 'red',
+		borderColor: 'black',
+		stage: stageForeground
+	}
+
+	var removeBlocks = Collision(explosion, 'all');
+	if (removeBlocks) {
+		removeBlocks.forEach(function(object, index, item) {
+			if (object.breakable === true) {object.state = 2;}
+			if (object.type === 'player') {object.state = 2; object.health.current -= damage;}
+		});
+	}
+}
+
+
+//Gravity
+function gravity(object) {object.vY += (GRAVITY*object.mass);}
+
+//Terminal Velocity
+function terminalVelocity(speed) {
+	if (speed > TERMINAL_VELOCITY) {speed = TERMINAL_VELOCITY;}
+	else if (speed < -TERMINAL_VELOCITY) {speed = -TERMINAL_VELOCITY;}
+	return speed;
+}
+
+//Update Math
+function update(delta) {
+
+	//console.log(delta);
+
+	//Get Key Presses
+	GetKeyPress();
+
+	//Players
+	player.forEach(function(object, index, item) {
+
+		//Potential Collision Object Goes Here
+		var collisionCandidate;
+
+		if (object.state === 1 || object.state === 2) {
+			//Apply gravity
+			//gravity(object);
+			object.vY += (GRAVITY);
+
+			//Apply friction
+			object.vX /= FRICTION;
+
+			//Check if moving left or right and adjust X
+			if (object.move === "left") {object.vX -= 10; object.move = false;}
+			else if (object.move === "right") {object.vX += 10; object.move = false;}
+
+			//Apply delta time
+			object.vX *= delta/100;
+			object.vY *= delta/100;
+
+			//Set New X Position
+			object.X += terminalVelocity(object.vX);
+
+			//Look for collisions with blocks on X-axis
+			if (object.vX < 0) {
+				collisionCandidate = Collision(object, 'left');
+				if (collisionCandidate && collisionCandidate.X < object.X) {object.X = collisionCandidate.X+(OBJECT_SIZE);}
+			} else if (object.vX > 0) {
+				collisionCandidate = Collision(object, 'right');
+				if (collisionCandidate && collisionCandidate.X > object.X) {object.X = collisionCandidate.X-(OBJECT_SIZE);}
+			}
+
+			//Set New Y Position
+			object.Y += terminalVelocity(object.vY);
+
+			//Look for collisions with blocks on Y-axis
+			if (object.vY > 0) {
+				collisionCandidate = Collision(object, 'down');
+				if (collisionCandidate && collisionCandidate.Y > object.Y) {
+					object.vY = 0;
+					object.Y = collisionCandidate.Y-(OBJECT_SIZE);
+				}
+			} else if (object.vY < 0) {
+				collisionCandidate = Collision(object, 'up');
+				if (collisionCandidate && collisionCandidate.Y < object.Y) {
+					object.vY = 0;
+					object.Y = collisionCandidate.oldY+(OBJECT_SIZE);
+				}
+			}
+
+			//Update Crosshair
+			object.crosshair.X = Math.round((object.X) + OBJECT_SIZE * Math.cos((2*Math.PI*(object.crosshair.A+7.5))/10));
+			object.crosshair.Y = Math.round((object.Y) + OBJECT_SIZE * Math.sin((2*Math.PI*(object.crosshair.A+7.5))/10));
+
+			//Update Textbox
+			object.text.X = object.X;
+			object.text.Y = object.Y-(object.sizeY/2)-8;
+
+			//Update Quadtree
+			myTree.removeObject(object);
+			myTree.insert(object);
+
+			//Check Health
+			if (object.health.current <= 0) {object.state = -1; myTree.removeObject(object);}
+		}
+	});
+
+	//Projectiles
+	projectile.forEach(function(object, index, item) {
+		if (object.state === 1) {
+
+			//Update Old Coordinates
+			object.oldX = object.X;
+			object.oldY = object.Y;
+
+			//Apply Gravity
+			gravity(object);
+
+			//Apply friction
+			//object.vX /= FRICTION;
+
+			//Apply delta time
+			//object.vX *= delta/40;
+			//object.vY *= delta/40;
+
+			//Set New Projectile Positions
+			object.X += terminalVelocity(object.vX);
+			object.Y += terminalVelocity(object.vY);
+
+			//Range Check
+			object.range -= Math.abs(object.vX) + Math.abs(object.vY);
+			if (object.range < 0) {explode(object);}
+
+			//Collision Check
+			var collisionCheck = Collision(object, 'all');
+			if (collisionCheck) {
+				if (object.explodeImpact) {
+					explode(object);
+				} else {
+					collisionCheck.forEach(function(object, index, item) {
+						if (object.breakable === true) {
+							object.color = 'red';
+							object.power = BLOCK_SIZE*10;
+							object.state = 3;
+							object.timer = 300;
+						}
+					});
+					object.state = 2;
+				}
+			}
+		}
+	});
+
+}
+
+//Overlay a recharge graphic
+function overlayHUD(object, objectType) {
+	return {
+		state: 1,
+		oldX: objectType.hudX + ((object.item.ammo-1)*OBJECT_SIZE*objectType.hudDirection),
+		oldY: objectType.hudY,
+		X: objectType.hudX + ((object.item.ammo-1)*OBJECT_SIZE*objectType.hudDirection),
+		Y: objectType.hudY,
+		color: 'rgba(200, 0, 200, '+(((new Date).getTime() - object.timer.fire)/object.item.reload)+')',
+		borderColor: 'rgba(0, 0, 0, '+(((new Date).getTime() - object.timer.fire)/object.item.reload)+')',
+		sizeX: BLOCK_SIZE-2,
+		sizeY: BLOCK_SIZE-2,
+		stage: stageForeground,
+		type: 'block',
+		breakable: true
+	};
+}
+
+
+
+//Repair Blocks
+function repairBlocks(object) {
+	var tempX = object.X
+	var tempY = object.Y
+	object.X = object.oldX;
+	object.Y = object.oldY;
+
+	var clearCrosshair = Collision(object, 'all');
+	if (clearCrosshair) {
+		clearCrosshair.forEach(function(object, index, item) {
+			clear(object);
+			draw(object);
+		});
+	}
+
+	object.X = tempX;
+	object.Y = tempY;
+}
+
+//Draw Everything
+function render() {
+
+	//Projectiles
+	projectile.forEach(function(object, index, item) {
+		if (object.state === 1) {
+			//Clear Projectile
+			clear(object);
+
+			//Draw Projectile
+			draw(object);
+		} else if (object.state === 2) {
+			//Clear Projectile
+			clear(object);
+			item.splice(index, 1);
+		}
+	});
+
+	//PLAYERS
+	player.forEach(function(object, index, item) {
+		if (object.state === -1) {
+			//Clear Player
+			clear(object);
+			object.state = 0;
+		}
+		if (object.state === 1 || object.state === 2) {
+
+			//Change the color of the player when hit
+			if (object.state === 2) {
+				object.color = 'rgba(256, 256, 0, 1)';
+				if (object.timer.color > 0)	{
+					object.timer.color--;
+				} else {
+					object.state = 1;
+					object.timer.color = 20;
+					object.color = object.originalColor;
+				}
+			}
+
+			//Clear Player
+			clear(object);
+
+			//Draw Player
+			draw(object);
+
+			//Ammo
+			drawHUD(object, object.ammo, object.item.ammo, object.item.totalAmmo, 'rgba(256,256,0,1)', true);
+
+			//Health
+			drawHUD(object, object.health, object.health.current, object.health.total, 'rgba(256,0,0,1)', false);
+
+			//Update Coordinates
+			object.oldX = object.X;
+			object.oldY = object.Y;
+		}
+	});
+
+	//Blocks
+	block.forEach(function(object, index, item) {
+		if (object.state === -1) {
+			clear(object);
+			myTree.removeObject(object);
+			object.state = 0;
+		}
+		if (object.state === 1) {
+			if (object.oldX != object.X || object.oldY != object.Y) {
+				clear(object);
+				draw(object);
+			}
+		} else if (object.state === 2) {
+			object.color = 'rgba(256, 256, 0, '+(object.timer/20)+')';
+			object.borderColor = 'rgba(0, 0, 0, '+(object.timer/20)+')';
+			if (object.timer > 0)	{
+				clear(object);
+				draw(object);
+				object.timer--;
+			} else {
+				object.state = -1;
+			}
+		} else if (object.state === 3) {
+			if (object.timer > 0)	{
+				clear(object);
+				draw(object);
+				object.timer--;
+			} else {
+				explode(object);
+			}
+		}
+	});
+
+	//HUD
+	player.forEach(function(object, index, item) {
+		if (object.state === 1 || object.state === 2) {
+			if (object.itemReport) {
+		 		if ((new Date).getTime() - object.timer.text < 3000) {
+					//Clear background and repair blocks before drawing new textbox
+					clear(object.text);
+					repairBlocks(object.text);
+					draw(object.text);
+
+					//Print text in textbox
+					object.stage.font = '10px Arial';
+					object.stage.fillStyle = 'black';
+					object.stage.textAlign = 'center';
+					object.stage.fillText(object.item.name,object.X,object.Y-(object.sizeY/2)-5);
+				} else {
+					//Clear background and repair blocks, turn off report
+					clear(object.text);
+					repairBlocks(object.text);
+					object.itemReport = false;
+				}
+
+			}
+
+			//Draw Crosshair
+			clear(object.crosshair);
+			repairBlocks(object.crosshair);
+			draw(object.crosshair);
+
+			object.text.oldX = object.text.X;
+			object.text.oldY = object.text.Y;
+
+			object.crosshair.oldX = object.crosshair.X;
+			object.crosshair.oldY = object.crosshair.Y;
+			object.crosshair.oldA = object.crosshair.A;
+
+
+		}
+	});
+
+	//FPS
+	stageForeground.clearRect((canvasWidth/2)-50, 20, 100, 20);
+	stageForeground.font = '12px Arial';
+	stageForeground.fillStyle = 'black';
+	stageForeground.textAlign = 'center';
+	stageForeground.fillText(Math.round(fps) + ' FPS', canvasWidth/2, 40);
+}
+
+function drawWorld() {
+	//Set Block Dimensions
+	var blocksWide = canvasWidth/(OBJECT_SIZE);
+	var blocksTall = canvasHeight/(OBJECT_SIZE);
+
+	//Set Block Counter to 0
+	var counter = 0;
+
+	//Create Walls
+	for (var i = 1; i < (blocksTall-1); i++) {
+		//index, X, Y, color, breakable
+		createBlock(counter, BORDER_WIDTH + (BLOCK_SIZE/2), BORDER_WIDTH + (BLOCK_SIZE/2) + (i*(OBJECT_SIZE)), 'white', false);
+		myTree.insert(block[counter]);
+		counter++;
+		//index, X, Y, color, breakable
+		createBlock(counter, (blocksWide*OBJECT_SIZE) - (OBJECT_SIZE/2), BORDER_WIDTH + (BLOCK_SIZE/2) + (i*(OBJECT_SIZE)), 'white', false);
+		myTree.insert(block[counter]);
+		counter++;
+	}
+	for (var i = 0; i < blocksWide; i++) {
+		//index, X, Y, color, breakable
+		createBlock(counter, BORDER_WIDTH+(BLOCK_SIZE/2)+(i*(OBJECT_SIZE)), BORDER_WIDTH+(BLOCK_SIZE/2), 'white', false);
+		myTree.insert(block[counter]);
+		counter++;
+		//index, X, Y, color, breakable
+		createBlock(counter, BORDER_WIDTH+(BLOCK_SIZE/2)+(i*(OBJECT_SIZE)), (blocksTall*OBJECT_SIZE)-(OBJECT_SIZE/2), 'white', false);
+		myTree.insert(block[counter]);
+		counter++;
+	}
+
+	//Create Ground
+	for (var j = 0; j < Math.floor(blocksTall/2)-1; j++) {
+		for (var i = 1; i < blocksWide-1; i++) {
+			var color = 255-(j*8);
+			//index, X, Y, color, breakable
+			createBlock(counter, BORDER_WIDTH+(BLOCK_SIZE/2) + (i*(OBJECT_SIZE)), BORDER_WIDTH+(BLOCK_SIZE/2) + ((blocksTall*OBJECT_SIZE)-((OBJECT_SIZE)*Math.floor(blocksTall/2)))+(j*(OBJECT_SIZE)), 'rgba(0, ' + color + ', 0, 1)', true);
+			myTree.insert(block[counter]);
+			counter++;
+		}
+	}
+
+	var stageView = {
+		left: 0,
+		top: 0,
+		right: canvasWidth,
+		bottom: canvasHeight
+	};
+
+	//Draw Blocks
+	block.forEach(function(object, index, item) {
+		if (object.X > stageView.left && object.Y > stageView.top && object.X < stageView.right && object.Y < stageView.bottom) {
+			draw(object);
+		}
+
+	});
+}
+
+//Listen for keypresses and touch
+var keyPressed = [];
+document.addEventListener('keydown', function(e) {keyPressed[e.keyCode] = true;}, false);
+document.addEventListener('keyup', function(e) {keyPressed[e.keyCode] = false;}, false);
+
+var touchable = 'createTouch' in document;
+if(touchable) {
+	STAGE_FOREGROUND.addEventListener( 'touchstart', onTouchStart, false );
+	STAGE_FOREGROUND.addEventListener( 'touchmove', onTouchMove, false );
+	STAGE_FOREGROUND.addEventListener( 'touchend', onTouchEnd, false );
+}
+
+
+//Setup Players
+createPlayer(0, (5*OBJECT_SIZE)-(OBJECT_SIZE/2), 80, 'rgba(0, 150, 200, 1)'); //Index, X, Y, Color
+createPlayer(1, (5*OBJECT_SIZE)-(OBJECT_SIZE/2), 80, 'rgba(200, 50, 0, 1)'); //Index, X, Y, Color
+
+//Setup Items
+selectItem(player[0], player[0].itemIndex); report(player[0]);
+selectItem(player[1], player[1].itemIndex); report(player[1]);
+
+
+/*/Game Loop Variables
+var now;
+var dt = 0;
+var last = (new Date).getTime();
+
+*/
+
+var limit = 300;
+var lastFrameTimeMs = 0;
+var maxFPS = 60;
+var dt = 0;
+var timestep = 1000 / 60;
+
+var fps = 60,
+    framesThisSecond = 0,
+    lastFpsUpdate = 0;
+
+function gameLoop(timestamp) {
+
+	if (timestamp > lastFpsUpdate + 1000) { // update every second
+		fps = 0.25 * framesThisSecond + (1 - 0.25) * fps; // compute the new FPS
+		lastFpsUpdate = timestamp;
+		framesThisSecond = 0;
+	}
+	framesThisSecond++;
+
+	//Throttle the frame rate.
+	if (timestamp < lastFrameTimeMs + (1000 / maxFPS)) {
+		requestAnimationFrame(gameLoop);
+		return;
+	}
+
+	dt += timestamp - lastFrameTimeMs;
+	lastFrameTimeMs = timestamp;
+
+	var numUpdateSteps = 0;
+	while (dt >= timestep) {
+		update(dt);
+		dt -= timestep;
+		if (++numUpdateSteps >= 240) {
+		   // dt = 0; //panic
+		    break;
+		}
+	}
+
+	render();
+	requestAnimationFrame(gameLoop);
+}
+
+//requestAnimationFrame(mainLoop);
+
+/*/Game Loop
+function gameLoop() {
+	//Get current time
+	now = (new Date).getTime();
+
+	//Get delta time
+	dt = ((now - last) / 1000); //dt += Math.min(1, (now - last) / 1000);
+
+	//Set last time to current time
+	last = now;
+
+	//Calculate Math
+	update(dt);
+
+	//Draw Everything
+	render();
+
+	//Request the next frame
+	requestAnimationFrame(gameLoop);
+}*/
+
+//StartUp Function
+function startUp() {
+	if (START_FULLSCREEN) {
+		//Remove Click Event Listner
+		STAGE_FOREGROUND.removeEventListener('click', startUp);
+
+		//Request Fullscreen
+		screenfull.request();
+
+		//Lock the screen in landscape mode
+		screen.orientation.lock("landscape-primary");
+	}
+
+	//Let the dimensions change
+	setTimeout(function(){
+		//Resize the canavas
+		sizeCanvas();
+
+		//Draw Blocks
+		drawWorld();
+
+		//Set Other Stuff
+		player[1].ammo.hudX = canvasWidth-(BORDER_WIDTH+2*(OBJECT_SIZE));
+		player[1].ammo.hudDirection = -1;
+		player[1].health.hudX = canvasWidth-(BORDER_WIDTH+2*(OBJECT_SIZE));
+		player[1].health.hudDirection = -1;
+
+		player[1].oldX = canvasWidth-(5*OBJECT_SIZE)-(OBJECT_SIZE/2);
+		player[1].X = canvasWidth-(5*OBJECT_SIZE)-(OBJECT_SIZE/2);
+		movePlayer(player[1], 'left');
+
+		//Start
+		requestAnimationFrame(gameLoop);
+	}, 1000);
+}
+
+
+
+sizeCanvas();
+//window.addEventListener('resize', sizeCanvas);
+//window.addEventListener('orientationchange', sizeCanvas);
+
+//Display Some Directions
+window.onload = function(){
+	if (START_FULLSCREEN) {
+		stageForeground.beginPath();
+		stageForeground.rect(0, 0, backgroundWidth, backgroundHeight);
+		stageForeground.fillStyle = 'black';
+		stageForeground.fill();
+		stageForeground.closePath();
+
+		stageForeground.font = 'bold 100px Gloria';
+		stageForeground.fillStyle = 'orange';
+		stageForeground.textAlign = 'center';
+		stageForeground.fillText("CROSSFIRE", backgroundWidth/2, backgroundHeight/2);
+
+		stageForeground.font = 'bold 60px Gloria';
+		stageForeground.fillStyle = 'orangered';
+		stageForeground.textAlign = 'center';
+		stageForeground.fillText("CLICK TO START", backgroundWidth/2, backgroundHeight/1.5);
+
+		//Wait For Click To Start Game (Fullscreen)
+		STAGE_FOREGROUND.addEventListener( 'click', startUp, false );
+	} else {startUp();}
+}
+
+</script>
+</body>
+</html>
